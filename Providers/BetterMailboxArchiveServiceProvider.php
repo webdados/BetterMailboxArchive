@@ -261,6 +261,10 @@ class BetterMailboxArchiveServiceProvider extends ServiceProvider
         // fetch switch is the only reason it appears.
         \Eventy::addAction('mailbox.update.dropdown.before_mailbox_name', array($this, 'markDropdownMailbox'), 10, 1);
 
+        // Tell "archived" and "archived + hidden" apart in Manage > Mailboxes,
+        // which is the only way back to a hidden mailbox.
+        \Eventy::addAction('mailbox_card.before_name', array($this, 'renderCardBadge'), 10, 1);
+
         // Cosmetics.
         \Eventy::addAction('layout.head', array($this, 'printStyles'), 10, 1);
         \Eventy::addFilter('flash_messages.flashes', array($this, 'filterFlashes'), 10, 1);
@@ -471,11 +475,11 @@ class BetterMailboxArchiveServiceProvider extends ServiceProvider
      */
     protected function rejectHidden($mailboxes)
     {
-        $ids = $this->hiddenMailboxIds();
-
-        if (!count($ids) || !$mailboxes) {
+        if (!$mailboxes) {
             return $mailboxes;
         }
+
+        $ids = $this->hiddenMailboxIds();
 
         if (is_array($mailboxes)) {
             foreach ($mailboxes as $i => $mailbox) {
@@ -487,6 +491,22 @@ class BetterMailboxArchiveServiceProvider extends ServiceProvider
             return array_values($mailboxes);
         }
 
+        // Always re-indexed, even when this module removed nothing, because
+        // core hands us a collection that is already broken.
+        //
+        // User::mailboxesCanView() runs Mailbox::excludeArchived() for
+        // non-administrators, which filters with reject() and keeps the
+        // original keys. layouts/app.blade.php:76 then does
+        // "count($mailboxes) == 1" and reads "$mailboxes[0]". A user with
+        // access to exactly two mailboxes, the first of which is archived,
+        // gets a collection of count 1 whose only key is 1, and every
+        // authenticated page dies with "Undefined array key 0".
+        //
+        // Reported upstream as freescout#5647. Our menu.mailboxes and
+        // dashboard.mailboxes callbacks run immediately after the call that
+        // breaks it, so values() here fixes core's bug for any install with
+        // this module active. Remove once that issue is fixed and we no
+        // longer support versions without the fix.
         return $mailboxes->reject(function ($mailbox) use ($ids) {
             return in_array((int) $mailbox->id, $ids, true);
         })->values();
@@ -1447,6 +1467,25 @@ class BetterMailboxArchiveServiceProvider extends ServiceProvider
     }
 
     /**
+     * Ids of mailboxes core is calling unconfigured purely because of our
+     * fetch switch.
+     *
+     * @return int[]
+     */
+    protected function falselyUnconfiguredMailboxIds()
+    {
+        $ids = array();
+
+        foreach (Mailbox::all() as $mailbox) {
+            if ($this->connectionWarningIsOurs($mailbox)) {
+                $ids[] = (int) $mailbox->id;
+            }
+        }
+
+        return $ids;
+    }
+
+    /**
      * Mark a mailbox in the settings sidebar dropdown whose lightning bolt is
      * ours, so the CSS can drop it.
      *
@@ -1463,6 +1502,29 @@ class BetterMailboxArchiveServiceProvider extends ServiceProvider
         if ($this->connectionWarningIsOurs($mailbox)) {
             echo '<span class="bma-no-flash"></span>';
         }
+    }
+
+    /**
+     * A "Hidden" badge on the Manage > Mailboxes card.
+     *
+     * Core marks every archived mailbox with the same padlock, so a mailbox
+     * hidden from administrators looks exactly like one that is merely
+     * archived. That matters more than it sounds: a hidden mailbox is gone
+     * from every menu, so this list is the only route back to its settings.
+     *
+     * @param \App\Mailbox $mailbox
+     *
+     * @return void
+     */
+    public function renderCardBadge($mailbox)
+    {
+        if (!$this->isHiddenFromAdmins($mailbox)) {
+            return;
+        }
+
+        echo '<span class="label label-default pull-right" title="'
+            .htmlspecialchars(__('Hidden from everyone, including administrators. Only these settings pages stay reachable.'))
+            .'">'.htmlspecialchars(__('Hidden')).'</span>';
     }
 
     /*
@@ -1549,6 +1611,19 @@ class BetterMailboxArchiveServiceProvider extends ServiceProvider
         // mailbox. markDropdownMailbox() puts a marker immediately before
         // core's glyph for the affected ones.
         $rules[] = '.bma-no-flash + .glyphicon-flash { display: none !important; }';
+
+        // The dashboard and the Manage > Mailboxes list grey a mailbox out on
+        // the same isConnected() test, and the dashboard goes further: it
+        // replaces the folder counts with "Administrator has not configured
+        // mailbox connection settings yet." Both are wrong for a mailbox whose
+        // only problem is that we switched fetching off, and both are keyed on
+        // the mailbox id, so they can be undone per card.
+        foreach ($this->falselyUnconfiguredMailboxIds() as $id) {
+            $rules[] = '.dash-card[data-mailbox-id="'.$id.'"].dash-card-inactive { background: #fff !important; }';
+            $rules[] = '.dash-card[data-mailbox-id="'.$id.'"].dash-card-inactive .dash-card-list { display: block !important; }';
+            $rules[] = '.dash-card[data-mailbox-id="'.$id.'"].dash-card-inactive .dash-card-inactive-content { display: none !important; }';
+            $rules[] = 'a.card[href$="/mailbox/settings/'.$id.'"].card-inactive { background-color: #fff !important; }';
+        }
 
         if (!count($rules)) {
             return;

@@ -27,7 +27,9 @@ What it does not do:
 - **Send emails** switch, per mailbox. Turn it off and nothing leaves that mailbox at all: replies, forwards, auto replies, staff notifications and Send Test are all blocked, at the mail layer and not just in the interface. Reply and Forward disappear from its conversations.
 - **Fetch emails** switch, per mailbox, so you can stop checking for new mail while the mailbox stays completely visible and searchable for everyone. Turning both switches off, without archiving, gives you the "closed but still readable by the whole team" state that core has no setting for.
 - **Automatic address release.** Archive a mailbox and its email address is parked on a tagged variant (`events+archived-7@example.com`), freeing the real address for a new mailbox straight away. Un-archive it and the real address comes back, unless another mailbox or a user has taken it meanwhile, in which case you get a clear error naming whoever has it rather than a silent failure. The mailbox id in the tag means **any number of archived mailboxes can share the same real address**, which is exactly the annual-event case: one archived mailbox per year, all of them remembering `events@example.com`.
-- **Read-only archives.** An archived mailbox keeps only Move (and Delete, for administrators). Everything else is gone, so the history stays exactly as it was. Move is deliberately kept, because "last year's box is closed but this one thread is still live" is the whole reason you would open an archive at all. Nothing can be moved *into* an archived mailbox.
+- **Read-only archives.** An archived mailbox keeps only Move (and Delete, for administrators). Reply, Forward, Note, and the assignee and status controls are all gone, from single conversations and from the conversation list's bulk actions, so the history stays exactly as it was. Move is deliberately kept, because "last year's box is closed but this one thread is still live" is the whole reason you would open an archive at all. Nothing can be moved *into* an archived mailbox.
+- **Hide from administrators too.** Archiving hides a mailbox from everyone who is not an administrator; administrators keep full access. This extra switch, which appears once a mailbox is archived and is **off by default**, gives them the same treatment: no conversations, no search results, nowhere in the menus. Only the mailbox's own settings pages stay reachable, and it keeps its place in Manage > Mailboxes with a "Hidden" badge, so you can always turn it back off.
+- **No more phantom warnings.** Switching fetching off used to make FreeScout flag the mailbox as badly configured, with an unexplained lightning bolt next to its name, a greyed-out dashboard card and its folder counts replaced by "Administrator has not configured mailbox connection settings yet." All of that is now suppressed, but only where our own switch is the cause: a mailbox that really is missing its settings is still flagged.
 
 ## Requirements
 
@@ -58,7 +60,9 @@ That puts every released address back, and tells you about any it could not rest
 ## Known limitations
 
 * **Releasing an address only means something inside Freescout.** Mail sent to the real address still arrives in the original inbox on your mail server and piles up there. Remove or redirect it on the mail server too.
-* **Administrators still see archived mailboxes in search results.** That is core's behaviour, and arguably the right one for an archive.
+* **Administrators still see archived mailboxes in search results**, unless "Hide from administrators too" is on. That is core's behaviour, and arguably the right one for an archive.
+* **With fetching switched off, the dashboard card loses its "New conversation" button.** Core gates that button on the mailbox being fully connected, and stopping fetching is what makes it report otherwise. There is no hook to put it back, and every other way to start a conversation still works.
+* **The search sidebar's mailbox filter still lists a hidden mailbox by name.** It returns nothing when selected. That list has no extension point and is cached for five minutes.
 * A customer's profile page lists conversations without any extension point for modules, so conversations from an archived mailbox can still show up there for an administrator.
 
 ## To do
