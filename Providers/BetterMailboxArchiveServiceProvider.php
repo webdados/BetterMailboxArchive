@@ -76,6 +76,43 @@ class BetterMailboxArchiveServiceProvider extends ServiceProvider
     );
 
     /**
+     * Routes that are never blocked, however hidden a mailbox is.
+     *
+     * Evaluated before any deny logic, so that no later change here can strand
+     * an administrator inside a mailbox they can no longer open. Manage >
+     * Mailboxes is deliberately included: MailboxesController@mailboxes has no
+     * Eventy filter, so that list always renders and is the way back in.
+     *
+     * mailboxes.view and mailboxes.view.folder are deliberately absent, and
+     * are the only mailboxes.* routes this module ever refuses.
+     *
+     * @var string[]
+     */
+    const ALWAYS_ALLOWED_ROUTES = array(
+        'dashboard',
+        'mailboxes',
+        'mailboxes.create',
+        'mailboxes.update',
+        'mailboxes.update.save',
+        'mailboxes.connection',
+        'mailboxes.connection.save',
+        'mailboxes.connection.incoming',
+        'mailboxes.connection.incoming.save',
+        'mailboxes.permissions',
+        'mailboxes.permissions.save',
+        'mailboxes.auto_reply',
+        'mailboxes.auto_reply.save',
+        'mailboxes.oauth',
+        'mailboxes.oauth_callback',
+        'mailboxes.oauth_disconnect',
+        'mailboxes.ajax',
+        'modules',
+        'modules.ajax',
+        'system.tools',
+        'system.tools.action',
+    );
+
+    /**
      * Per-request memo of every option this module owns, loaded in one query
      * the first time any of them is read.
      *
@@ -93,6 +130,13 @@ class BetterMailboxArchiveServiceProvider extends ServiceProvider
      * @var \App\Mailbox[]|null
      */
     protected static $send_disabled_mailboxes = null;
+
+    /**
+     * Per-request memo of the ids hidden from administrators too.
+     *
+     * @var int[]|null
+     */
+    protected static $hidden_mailbox_ids = null;
 
     /**
      * Boot the application events.
@@ -206,6 +250,13 @@ class BetterMailboxArchiveServiceProvider extends ServiceProvider
         // Nothing can be moved into an archived mailbox.
         \Eventy::addFilter('conversations.move_conv.mailboxes', array($this, 'filterMoveMailboxes'), 10, 1);
 
+        // "Hide from administrators too": core already removes an archived
+        // mailbox from these lists for everyone else, so this only has to
+        // repeat that for the administrators core still lets through.
+        \Eventy::addFilter('menu.mailboxes', array($this, 'filterMenuMailboxes'), 10, 1);
+        \Eventy::addFilter('dashboard.mailboxes', array($this, 'filterDashboardMailboxes'), 10, 1);
+        \Eventy::addFilter('search.conversations.apply_filters', array($this, 'filterSearchConversations'), 10, 3);
+
         // Cosmetics.
         \Eventy::addAction('layout.head', array($this, 'printStyles'), 10, 1);
         \Eventy::addFilter('flash_messages.flashes', array($this, 'filterFlashes'), 10, 1);
@@ -287,6 +338,7 @@ class BetterMailboxArchiveServiceProvider extends ServiceProvider
         }
 
         self::$send_disabled_mailboxes = null;
+        self::$hidden_mailbox_ids = null;
     }
 
     /**
@@ -323,6 +375,86 @@ class BetterMailboxArchiveServiceProvider extends ServiceProvider
         }
 
         return $this->option('send_enabled', $mailbox->id, '1', $use_cache) == '1';
+    }
+
+    /**
+     * Whether the mailbox is hidden from administrators too.
+     *
+     * Only meaningful while the mailbox is archived, since core already hides
+     * an archived mailbox from everybody else. The stored value survives an
+     * un-archive untouched, like the other two switches.
+     *
+     * @param \App\Mailbox $mailbox
+     * @param bool         $use_cache
+     *
+     * @return bool
+     */
+    public function isHiddenFromAdmins($mailbox, $use_cache = true)
+    {
+        if (!$mailbox || !$mailbox->isArchived()) {
+            return false;
+        }
+
+        return $this->option('hidden_from_admins', $mailbox->id, '0', $use_cache) == '1';
+    }
+
+    /**
+     * Ids of every mailbox hidden from administrators too, memoised per
+     * request.
+     *
+     * @return int[]
+     */
+    protected function hiddenMailboxIds()
+    {
+        if (self::$hidden_mailbox_ids !== null) {
+            return self::$hidden_mailbox_ids;
+        }
+
+        $ids = array();
+
+        foreach (Mailbox::all() as $mailbox) {
+            if ($this->isHiddenFromAdmins($mailbox)) {
+                $ids[] = (int) $mailbox->id;
+            }
+        }
+
+        self::$hidden_mailbox_ids = $ids;
+
+        return $ids;
+    }
+
+    /**
+     * Drop hidden mailboxes from a list core has handed us.
+     *
+     * values() is not optional: layouts/app.blade.php:77 does
+     * "count($mailboxes) == 1" and then "$mailboxes[0]", and both reject() and
+     * core's own Mailbox::excludeArchived() preserve the original keys.
+     *
+     * @param mixed $mailboxes
+     *
+     * @return mixed
+     */
+    protected function rejectHidden($mailboxes)
+    {
+        $ids = $this->hiddenMailboxIds();
+
+        if (!count($ids) || !$mailboxes) {
+            return $mailboxes;
+        }
+
+        if (is_array($mailboxes)) {
+            foreach ($mailboxes as $i => $mailbox) {
+                if (in_array((int) $mailbox->id, $ids, true)) {
+                    unset($mailboxes[$i]);
+                }
+            }
+
+            return array_values($mailboxes);
+        }
+
+        return $mailboxes->reject(function ($mailbox) use ($ids) {
+            return in_array((int) $mailbox->id, $ids, true);
+        })->values();
     }
 
     /**
@@ -452,6 +584,10 @@ class BetterMailboxArchiveServiceProvider extends ServiceProvider
         // while it is on. Rendered hidden server-side rather than left to the
         // script below, so the state is right even before any JavaScript runs.
         $hide_switches = $mailbox->isArchived() ? ' style="display: none;"' : '';
+
+        // The opposite: only meaningful while the mailbox is archived.
+        $hide_archived_only = $mailbox->isArchived() ? '' : ' style="display: none;"';
+        $hidden_on = $this->option('hidden_from_admins', $mailbox->id, '0') == '1';
         ?>
         <div id="better-mailbox-archive-options">
             <?php if ($original_email) : ?>
@@ -499,6 +635,20 @@ class BetterMailboxArchiveServiceProvider extends ServiceProvider
                     </div>
                 </div>
             </div>
+            <div class="form-group better-mailbox-archive-archived-only"<?php echo $hide_archived_only; ?>>
+                <label for="bettermailboxarchive_hidden_from_admins" class="col-sm-2 control-label"><?php echo __('Hide from administrators too'); ?></label>
+                <div class="col-sm-6">
+                    <div class="controls">
+                        <div class="onoffswitch-wrap">
+                            <div class="onoffswitch">
+                                <input type="checkbox" name="bettermailboxarchive_hidden_from_admins" value="1" id="bettermailboxarchive_hidden_from_admins" class="onoffswitch-checkbox" <?php if ($hidden_on) echo 'checked="checked"'; ?>>
+                                <label class="onoffswitch-label" for="bettermailboxarchive_hidden_from_admins"></label>
+                            </div>
+                            <i class="glyphicon glyphicon-info-sign icon-info icon-info-inline" data-toggle="popover" data-trigger="hover" data-placement="top" data-content="<?php echo __('Archiving already hides this mailbox from everyone who is not an administrator. Turn this on to hide it from administrators as well: no conversations, no search results, nowhere in the menus. Only these settings pages stay reachable, so you can turn it back off.'); ?>"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
             <input type="hidden" name="bettermailboxarchive_present" value="1">
             <hr>
         </div>
@@ -507,6 +657,7 @@ class BetterMailboxArchiveServiceProvider extends ServiceProvider
                 var state = document.getElementById('mailbox_state');
                 var email = document.getElementById('email');
                 var switches = document.querySelectorAll('.better-mailbox-archive-switch');
+                var archived_only = document.querySelectorAll('.better-mailbox-archive-archived-only');
                 var options = document.getElementById('better-mailbox-archive-options');
 
                 // Our fields belong under core's "Archived" switch, but the only
@@ -527,6 +678,9 @@ class BetterMailboxArchiveServiceProvider extends ServiceProvider
                     var archived = state && state.checked;
                     for (var i = 0; i < switches.length; i++) {
                         switches[i].style.display = archived ? 'none' : '';
+                    }
+                    for (var j = 0; j < archived_only.length; j++) {
+                        archived_only[j].style.display = archived ? '' : 'none';
                     }
                     if (email) {
                         email.readOnly = !!archived;
@@ -669,6 +823,9 @@ class BetterMailboxArchiveServiceProvider extends ServiceProvider
         if (!$will_be_archived) {
             $this->setOption('fetch_enabled', $mailbox->id, $request->filled('bettermailboxarchive_fetch_enabled') ? '1' : '0');
             $this->setOption('send_enabled', $mailbox->id, $request->filled('bettermailboxarchive_send_enabled') ? '1' : '0');
+        } else {
+            // Only shown, and so only posted, while archived.
+            $this->setOption('hidden_from_admins', $mailbox->id, $request->filled('bettermailboxarchive_hidden_from_admins') ? '1' : '0');
         }
 
         if (!$is_archived && $will_be_archived) {
@@ -966,6 +1123,25 @@ class BetterMailboxArchiveServiceProvider extends ServiceProvider
 
         $route_name = \Route::currentRouteName();
 
+        // Anti-lockout, evaluated before anything that can deny: the screens
+        // that let an administrator turn "Hide from administrators too" back
+        // off are never refused. mailboxes.ajax stays reachable here because
+        // the settings screens need it; the narrower send_test check below
+        // still applies to it.
+        $always_allowed = in_array($route_name, self::ALWAYS_ALLOWED_ROUTES, true);
+
+        if (!$always_allowed) {
+            $hidden_mailbox = $this->mailboxForVisibilityCheck($request, $route_name);
+
+            if ($hidden_mailbox && $this->isHiddenFromAdmins($hidden_mailbox)) {
+                if (strpos((string) $route_name, '.ajax') !== false) {
+                    $this->abortAjax(__('Mailbox not found'));
+                }
+
+                abort(404);
+            }
+        }
+
         if ($route_name == 'mailboxes.ajax' && $request->input('action') == 'send_test') {
             $mailbox = $this->findMailbox($request->input('mailbox_id'));
 
@@ -1007,6 +1183,27 @@ class BetterMailboxArchiveServiceProvider extends ServiceProvider
                 $this->abortAjax(__('Sending is turned off for this mailbox.'));
             }
         }
+    }
+
+    /**
+     * The mailbox a request would expose, for the visibility check.
+     *
+     * Conversation ajax names its subject in the body rather than the route,
+     * so it needs the conversation resolver; everything else is a route
+     * parameter.
+     *
+     * @param \Illuminate\Http\Request $request
+     * @param string|null              $route_name
+     *
+     * @return \App\Mailbox|null
+     */
+    protected function mailboxForVisibilityCheck($request, $route_name)
+    {
+        if ($route_name == 'conversations.ajax' || $route_name == 'conversations.ajax_html') {
+            return $this->mailboxFromConversationRequest($request);
+        }
+
+        return $this->findMailbox($this->currentMailboxId());
     }
 
     /**
@@ -1159,6 +1356,59 @@ class BetterMailboxArchiveServiceProvider extends ServiceProvider
         }
 
         return Mailbox::excludeArchived($mailboxes)->values();
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Hidden from administrators too
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Remove hidden mailboxes from the top navigation menu.
+     *
+     * @param mixed $mailboxes
+     *
+     * @return mixed
+     */
+    public function filterMenuMailboxes($mailboxes)
+    {
+        return $this->rejectHidden($mailboxes);
+    }
+
+    /**
+     * Remove hidden mailboxes from the dashboard.
+     *
+     * @param mixed $mailboxes
+     *
+     * @return mixed
+     */
+    public function filterDashboardMailboxes($mailboxes)
+    {
+        return $this->rejectHidden($mailboxes);
+    }
+
+    /**
+     * Keep conversations from hidden mailboxes out of search results.
+     *
+     * Non-administrators are already excluded by core, because the search is
+     * scoped to mailboxesIdsCanView() and archived mailboxes are not in it.
+     *
+     * @param mixed  $query
+     * @param array  $filters
+     * @param string $q
+     *
+     * @return mixed
+     */
+    public function filterSearchConversations($query, $filters = array(), $q = '')
+    {
+        $ids = $this->hiddenMailboxIds();
+
+        if (count($ids) && $query) {
+            $query->whereNotIn('conversations.mailbox_id', $ids);
+        }
+
+        return $query;
     }
 
     /*
