@@ -257,6 +257,10 @@ class BetterMailboxArchiveServiceProvider extends ServiceProvider
         \Eventy::addFilter('dashboard.mailboxes', array($this, 'filterDashboardMailboxes'), 10, 1);
         \Eventy::addFilter('search.conversations.apply_filters', array($this, 'filterSearchConversations'), 10, 3);
 
+        // Suppress core's meaningless "not configured" bolt where our own
+        // fetch switch is the only reason it appears.
+        \Eventy::addAction('mailbox.update.dropdown.before_mailbox_name', array($this, 'markDropdownMailbox'), 10, 1);
+
         // Cosmetics.
         \Eventy::addAction('layout.head', array($this, 'printStyles'), 10, 1);
         \Eventy::addFilter('flash_messages.flashes', array($this, 'filterFlashes'), 10, 1);
@@ -396,6 +400,37 @@ class BetterMailboxArchiveServiceProvider extends ServiceProvider
         }
 
         return $this->option('hidden_from_admins', $mailbox->id, '0', $use_cache) == '1';
+    }
+
+    /**
+     * Whether core's "connection not configured" lightning bolt on this
+     * mailbox is purely our doing.
+     *
+     * Core shows it whenever isConnected() is false, and isConnected() is
+     * isInActive() && isOutActive(). Our fetch switch forces isInActive()
+     * false, so a mailbox with perfectly good settings starts being flagged
+     * as misconfigured the moment fetching is switched off. True only when
+     * removing our filter would make the warning go away, so a genuinely
+     * unconfigured mailbox still gets warned about.
+     *
+     * @param \App\Mailbox $mailbox
+     *
+     * @return bool
+     */
+    protected function connectionWarningIsOurs($mailbox)
+    {
+        if (!$mailbox || $mailbox->isArchived()) {
+            // Core shows a padlock rather than a bolt for those.
+            return false;
+        }
+
+        if ($this->isFetchEnabled($mailbox) || !$mailbox->isOutActive()) {
+            return false;
+        }
+
+        // Core's own test in isInActive(), minus the filter we registered.
+        return (bool) ($mailbox->in_protocol && $mailbox->in_server && $mailbox->in_port
+            && $mailbox->in_username && $mailbox->in_password);
     }
 
     /**
@@ -1411,6 +1446,25 @@ class BetterMailboxArchiveServiceProvider extends ServiceProvider
         return $query;
     }
 
+    /**
+     * Mark a mailbox in the settings sidebar dropdown whose lightning bolt is
+     * ours, so the CSS can drop it.
+     *
+     * The hook fires immediately before core's glyph for that same mailbox,
+     * which is what makes an adjacent-sibling rule possible; there is no way
+     * to scope CSS to one item in that list otherwise.
+     *
+     * @param \App\Mailbox $mailbox
+     *
+     * @return void
+     */
+    public function markDropdownMailbox($mailbox)
+    {
+        if ($this->connectionWarningIsOurs($mailbox)) {
+            echo '<span class="bma-no-flash"></span>';
+        }
+    }
+
     /*
     |--------------------------------------------------------------------------
     | Cosmetics
@@ -1434,11 +1488,6 @@ class BetterMailboxArchiveServiceProvider extends ServiceProvider
     public function printStyles()
     {
         $ids = $this->sendDisabledMailboxIds();
-
-        if (!count($ids)) {
-            return;
-        }
-
         $rules = array();
 
         // route('conversations.create') is /mailbox/{mailbox_id}/new-ticket.
@@ -1449,6 +1498,7 @@ class BetterMailboxArchiveServiceProvider extends ServiceProvider
 
         // The rest only applies to the mailbox whose page is being rendered.
         $current_id = $this->currentMailboxId();
+        $current = $this->findMailbox($current_id);
 
         if ($current_id && in_array($current_id, $ids, true)) {
             $rules[] = '.conv-reply-block { display: none !important; }';
@@ -1473,8 +1523,6 @@ class BetterMailboxArchiveServiceProvider extends ServiceProvider
         // controls have to go as well. handleRequest() already refuses the
         // matching ajax actions, and a control that can only ever fail should
         // not be on screen.
-        $current = $this->findMailbox($current_id);
-
         if ($current && $current->isArchived()) {
             // conversations/view.blade.php gives both a stable id.
             $rules[] = '#conv-assignee, #conv-status { display: none !important; }';
@@ -1488,6 +1536,22 @@ class BetterMailboxArchiveServiceProvider extends ServiceProvider
             // inner groups are assignee and status; "clear" and "delete" are
             // plain buttons on the outer group and are left alone.
             $rules[] = '#conversations-bulk-actions .btn-group .btn-group { display: none !important; }';
+        }
+
+        // Core's lightning bolt means "connection not configured", has no
+        // tooltip and says nothing to anyone. Where our own fetch switch is
+        // the only reason it appears, it is simply wrong, so drop it.
+        if ($this->connectionWarningIsOurs($current)) {
+            $rules[] = '.sidebar-title .glyphicon-flash { display: none !important; }';
+        }
+
+        // Same bolt in the settings sidebar's mailbox dropdown, one item per
+        // mailbox. markDropdownMailbox() puts a marker immediately before
+        // core's glyph for the affected ones.
+        $rules[] = '.bma-no-flash + .glyphicon-flash { display: none !important; }';
+
+        if (!count($rules)) {
+            return;
         }
 
         echo '<style>'."\n".implode("\n", $rules)."\n".'</style>'."\n";
