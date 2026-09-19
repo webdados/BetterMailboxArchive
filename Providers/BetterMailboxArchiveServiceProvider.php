@@ -1469,6 +1469,27 @@ class BetterMailboxArchiveServiceProvider extends ServiceProvider
             $rules[] = '.sidebar-buttons .btn-group a.btn { border-radius: 14px !important; border-right-style: solid !important; border-right-width: 1px !important; }';
         }
 
+        // An archived mailbox is read only, so the assignee and status
+        // controls have to go as well. handleRequest() already refuses the
+        // matching ajax actions, and a control that can only ever fail should
+        // not be on screen.
+        $current = $this->findMailbox($current_id);
+
+        if ($current && $current->isArchived()) {
+            // conversations/view.blade.php gives both a stable id.
+            $rules[] = '#conv-assignee, #conv-status { display: none !important; }';
+
+            // Their <li> wrappers carry "margin: 0 4px" (style.css:2024), so
+            // drop those too where :has() is available. Browsers without it
+            // ignore this rule and keep the 8px, which is the whole cost.
+            $rules[] = '.conv-info > li:has(#conv-assignee), .conv-info > li:has(#conv-status) { display: none !important; }';
+
+            // Same two actions in the conversation list's bulk toolbar. The
+            // inner groups are assignee and status; "clear" and "delete" are
+            // plain buttons on the outer group and are left alone.
+            $rules[] = '#conversations-bulk-actions .btn-group .btn-group { display: none !important; }';
+        }
+
         echo '<style>'."\n".implode("\n", $rules)."\n".'</style>'."\n";
     }
 
