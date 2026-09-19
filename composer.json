@@ -1,0 +1,25 @@
+{
+    "name": "webdados/better-mailbox-archive",
+    "description": "",
+    "authors": [
+        {
+            "name": "Webdados",
+            "email": "geral@webdados.pt"
+        }
+    ],
+    "extra": {
+        "laravel": {
+            "providers": [
+                "Modules\\BetterMailboxArchive\\Providers\\BetterMailboxArchiveServiceProvider"
+            ],
+            "aliases": {
+
+            }
+        }
+    },
+    "autoload": {
+        "psr-4": {
+            "Modules\\BetterMailboxArchive\\": ""
+        }
+    }
+}

@@ -1,0 +1,25 @@
+{
+    "name": "Better Mailbox Archive",
+    "alias": "bettermailboxarchive",
+    "description": "Completes FreeScout's Archived mailboxes: stops a mailbox sending, frees its email address so another mailbox can take it over, and adds separate switches to turn fetching and sending off on their own.",
+    "version": "1.0",
+    "detailsUrl": "",
+    "author": "Webdados - Marco Almeida",
+    "authorUrl": "https://www.webdados.pt",
+    "img": "/modules/bettermailboxarchive/images/icon.png",
+    "latestVersionUrl": "https://raw.githubusercontent.com/webdados/BetterMailboxArchive/main/module.json",
+    "latestVersionZipUrl": "https://github.com/webdados/BetterMailboxArchive/releases/latest/download/BetterMailboxArchive.zip",
+    "requiredAppVersion": "1.8.240",
+    "license": "AGPL-3.0",
+    "keywords": [],
+    "active": 0,
+    "order": 0,
+    "providers": [
+        "Modules\\BetterMailboxArchive\\Providers\\BetterMailboxArchiveServiceProvider"
+    ],
+    "aliases": {},
+    "files": [
+        "start.php"
+    ],
+    "requires": []
+}
