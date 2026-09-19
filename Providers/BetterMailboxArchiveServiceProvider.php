@@ -507,6 +507,21 @@ class BetterMailboxArchiveServiceProvider extends ServiceProvider
                 var state = document.getElementById('mailbox_state');
                 var email = document.getElementById('email');
                 var switches = document.querySelectorAll('.better-mailbox-archive-switch');
+                var options = document.getElementById('better-mailbox-archive-options');
+
+                // Our fields belong under core's "Archived" switch, but the only
+                // hook on this page fires above it (mailbox.update.before_name at
+                // resources/views/mailboxes/update.blade.php:25) and core has no
+                // hook between that block and the Mailbox Name field. So render
+                // there and move into place. If anything about that markup
+                // changes, the fields simply stay where they were rendered.
+                if (state && options) {
+                    var archived_group = state.closest('.form-group');
+
+                    if (archived_group && archived_group.parentNode) {
+                        archived_group.parentNode.insertBefore(options, archived_group.nextSibling);
+                    }
+                }
 
                 function sync() {
                     var archived = state && state.checked;
