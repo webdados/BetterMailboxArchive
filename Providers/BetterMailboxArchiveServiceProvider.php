@@ -447,6 +447,11 @@ class BetterMailboxArchiveServiceProvider extends ServiceProvider
         $fetch_on = $this->option('fetch_enabled', $mailbox->id) == '1';
         $send_on = $this->option('send_enabled', $mailbox->id) == '1';
         $original_email = $this->option('original_email', $mailbox->id, '');
+
+        // Archiving already forces both switches off, so they are irrelevant
+        // while it is on. Rendered hidden server-side rather than left to the
+        // script below, so the state is right even before any JavaScript runs.
+        $hide_switches = $mailbox->isArchived() ? ' style="display: none;"' : '';
         ?>
         <div id="better-mailbox-archive-options">
             <?php if ($original_email) : ?>
@@ -466,7 +471,7 @@ class BetterMailboxArchiveServiceProvider extends ServiceProvider
                     </div>
                 </div>
             <?php endif; ?>
-            <div class="form-group better-mailbox-archive-switch">
+            <div class="form-group better-mailbox-archive-switch"<?php echo $hide_switches; ?>>
                 <label for="bettermailboxarchive_fetch_enabled" class="col-sm-2 control-label"><?php echo __('Fetch emails'); ?></label>
                 <div class="col-sm-6">
                     <div class="controls">
@@ -480,7 +485,7 @@ class BetterMailboxArchiveServiceProvider extends ServiceProvider
                     </div>
                 </div>
             </div>
-            <div class="form-group better-mailbox-archive-switch">
+            <div class="form-group better-mailbox-archive-switch"<?php echo $hide_switches; ?>>
                 <label for="bettermailboxarchive_send_enabled" class="col-sm-2 control-label"><?php echo __('Send emails'); ?></label>
                 <div class="col-sm-6">
                     <div class="controls">
@@ -497,7 +502,7 @@ class BetterMailboxArchiveServiceProvider extends ServiceProvider
             <input type="hidden" name="bettermailboxarchive_present" value="1">
             <hr>
         </div>
-        <script>
+        <script type="text/javascript"<?php echo \Helper::cspNonceAttr(); ?>>
             document.addEventListener('DOMContentLoaded', function () {
                 var state = document.getElementById('mailbox_state');
                 var email = document.getElementById('email');
@@ -1149,13 +1154,15 @@ class BetterMailboxArchiveServiceProvider extends ServiceProvider
 
     /**
      * Hide what core still renders for a mailbox that cannot send: the reply
-     * form block, and the two New Conversation buttons. Core gates the
-     * dashboard one on isConnected() rather than isArchived(), so it is still
-     * offered on an archived card.
+     * form block and the New Conversation buttons. Core gates the dashboard
+     * one on isConnected() rather than isArchived(), so it is still offered on
+     * an archived card.
      *
      * Injected inline rather than as a published module asset so it works even
      * before the module's public symlink exists, matching how core itself
-     * guards against that in app.blade.php.
+     * guards against that in app.blade.php. Inline styles are fine under
+     * FreeScout's CSP, which allows 'unsafe-inline' for style-src but not for
+     * script-src (see renderSettings()).
      *
      * @return void
      */
@@ -1167,49 +1174,80 @@ class BetterMailboxArchiveServiceProvider extends ServiceProvider
             return;
         }
 
-        $rules = array('.conv-reply-block { display: none !important; }');
+        $rules = array();
 
         // route('conversations.create') is /mailbox/{mailbox_id}/new-ticket.
+        // Hidden everywhere, since the dashboard lists every mailbox at once.
         foreach ($ids as $id) {
             $rules[] = 'a[href$="/mailbox/'.$id.'/new-ticket"] { display: none !important; }';
         }
 
-        $conversation_id = (int) request()->route('id');
-        $mailbox_id = (int) request()->route('mailbox_id');
+        // The rest only applies to the mailbox whose page is being rendered.
+        $current_id = $this->currentMailboxId();
 
-        // The reply block only needs hiding on a conversation in one of these
-        // mailboxes, so scope the blanket rule to those pages.
-        if (!$this->currentPageIsSendDisabled($conversation_id, $mailbox_id, $ids)) {
-            array_shift($rules);
+        if ($current_id && in_array($current_id, $ids, true)) {
+            $rules[] = '.conv-reply-block { display: none !important; }';
+
+            // Hiding the New Conversation link leaves the settings button with
+            // a square, border-less right edge, because core rounds the two
+            // sidebar buttons structurally rather than by position:
+            //   .sidebar-buttons .btn-group a.btn { border-radius: 14px 0 0 14px; }
+            //   .sidebar-buttons > a.btn          { border-radius: 0 14px 14px 0; }
+            // and .sidebar-buttons .btn-group .btn drops border-right, relying
+            // on the neighbour we just hid to supply that edge.
+            //
+            // !important is not optional: layout.head fires at
+            // layouts/app.blade.php:21 but the stylesheets load at :33, and
+            // core's own comment there says style.css must come last so it
+            // can redefine styles. Our selector has the same specificity as
+            // core's, so without it core simply wins on source order.
+            $rules[] = '.sidebar-buttons .btn-group a.btn { border-radius: 14px !important; border-right-style: solid !important; border-right-width: 1px !important; }';
         }
 
         echo '<style>'."\n".implode("\n", $rules)."\n".'</style>'."\n";
     }
 
     /**
-     * Whether the page being rendered belongs to a mailbox that cannot send.
+     * The mailbox the page being rendered belongs to, or 0.
      *
-     * @param int   $conversation_id
-     * @param int   $mailbox_id
-     * @param int[] $ids
+     * Covers the mailbox screens (route parameter "id"), the screens that name
+     * the mailbox directly ("mailbox_id"), and a conversation, which only
+     * knows its mailbox through the database.
      *
-     * @return bool
+     * @return int
      */
-    protected function currentPageIsSendDisabled($conversation_id, $mailbox_id, $ids)
+    protected function currentMailboxId()
     {
-        if ($mailbox_id && in_array($mailbox_id, $ids, true)) {
-            return true;
+        $request = request();
+
+        if (!$request || !$request->route()) {
+            return 0;
         }
 
-        if (\Route::currentRouteName() == 'conversations.view' && $conversation_id) {
-            $conversation = \App\Conversation::find($conversation_id);
+        $mailbox_id = (int) $request->route('mailbox_id');
 
-            if ($conversation && in_array((int) $conversation->mailbox_id, $ids, true)) {
-                return true;
-            }
+        if ($mailbox_id) {
+            return $mailbox_id;
         }
 
-        return false;
+        $route_name = \Route::currentRouteName();
+        $id = (int) $request->route('id');
+
+        if (!$id) {
+            return 0;
+        }
+
+        if (strpos((string) $route_name, 'mailboxes.') === 0) {
+            return $id;
+        }
+
+        if ($route_name == 'conversations.view') {
+            $conversation = \App\Conversation::find($id);
+
+            return $conversation ? (int) $conversation->mailbox_id : 0;
+        }
+
+        return 0;
     }
 
     /**
