@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.1 - 2026-09-22
+
+* Fixed the module icon showing as a broken image in Manage > Modules until the module is activated
+
 ## 0.2 - 2026-09-19
 
 * New "Hide from administrators too" option, which appears once a mailbox is archived and is off by default. With it on, the mailbox disappears for administrators as well: no conversations, no search results, nowhere in the menus. Only its settings pages stay reachable, and it is marked "Hidden" in Manage > Mailboxes, so you can always turn it back off
