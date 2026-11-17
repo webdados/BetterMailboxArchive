@@ -1,6 +1,6 @@
 # Changelog
 
-## TBA
+## 0.3 - 2026-11-17
 
 * Works with the Webdados MCP Connector: AI assistants connected to FreeScout through it follow this module's rules. Mailboxes hidden from administrators stay hidden from them, archived mailboxes stay read only, nothing is sent from a mailbox with sending turned off, and the assistant is told whether each mailbox sends
 
