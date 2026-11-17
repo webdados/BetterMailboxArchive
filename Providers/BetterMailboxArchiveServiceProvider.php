@@ -257,6 +257,13 @@ class BetterMailboxArchiveServiceProvider extends ServiceProvider
         \Eventy::addFilter('dashboard.mailboxes', array($this, 'filterDashboardMailboxes'), 10, 1);
         \Eventy::addFilter('search.conversations.apply_filters', array($this, 'filterSearchConversations'), 10, 3);
 
+        // Webdados MCP Connector: the same rules for AI assistants working
+        // through it, which never pass through handleRequest(). These filters
+        // only fire when the connector is installed.
+        \Eventy::addFilter('webdadosmcpconnector.mailbox_ids', array($this, 'filterMcpMailboxIds'), 10, 2);
+        \Eventy::addFilter('webdadosmcpconnector.write_allowed', array($this, 'filterMcpWriteAllowed'), 10, 7);
+        \Eventy::addFilter('webdadosmcpconnector.present.mailbox', array($this, 'filterMcpPresentMailbox'), 10, 3);
+
         // Suppress core's meaningless "not configured" bolt where our own
         // fetch switch is the only reason it appears.
         \Eventy::addAction('mailbox.update.dropdown.before_mailbox_name', array($this, 'markDropdownMailbox'), 10, 1);
@@ -1464,6 +1471,76 @@ class BetterMailboxArchiveServiceProvider extends ServiceProvider
         }
 
         return $query;
+    }
+
+    /**
+     * Webdados MCP Connector: mailboxes hidden from administrators too are
+     * not reachable through the connector either, for anyone. Same rule as
+     * filterSearchConversations().
+     *
+     * @param int[]     $ids
+     * @param \App\User $user
+     *
+     * @return int[]
+     */
+    public function filterMcpMailboxIds($ids, $user = null)
+    {
+        $hidden = $this->hiddenMailboxIds();
+
+        return count($hidden) ? array_values(array_diff((array) $ids, $hidden)) : $ids;
+    }
+
+    /**
+     * Webdados MCP Connector: archived mailboxes are read only, and nothing is
+     * sent from a mailbox with sending turned off. Notes stay allowed on a
+     * mailbox with sending off: they are never emailed.
+     *
+     * @param true|string|false      $allowed
+     * @param string                 $operation
+     * @param \App\Mailbox           $mailbox
+     * @param \App\Conversation|null $conversation
+     * @param \App\User              $user
+     * @param bool                   $sends_email
+     * @param array                  $args
+     *
+     * @return true|string|false
+     */
+    public function filterMcpWriteAllowed($allowed, $operation = '', $mailbox = null, $conversation = null, $user = null, $sends_email = false, $args = array())
+    {
+        if ($allowed !== true || !$mailbox) {
+            return $allowed;
+        }
+
+        if ($mailbox->isArchived()) {
+            return __('This mailbox is archived and read only.');
+        }
+
+        // Uncached, as in filterAutoReply(): a long-running worker must see a
+        // switch change.
+        if ($sends_email && !$this->isSendEnabled($mailbox, false)) {
+            return __('Sending is turned off for this mailbox.');
+        }
+
+        return $allowed;
+    }
+
+    /**
+     * Webdados MCP Connector: tell the assistant whether the mailbox sends.
+     * The connector adds "archived" itself, from core.
+     *
+     * @param array        $data
+     * @param \App\Mailbox $mailbox
+     * @param \App\User    $viewer
+     *
+     * @return array
+     */
+    public function filterMcpPresentMailbox($data, $mailbox = null, $viewer = null)
+    {
+        if ($mailbox) {
+            $data['sending_enabled'] = $this->isSendEnabled($mailbox);
+        }
+
+        return $data;
     }
 
     /**

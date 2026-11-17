@@ -45,6 +45,10 @@ What it does not do:
 
 No further configuration is needed.
 
+## Webdados MCP Connector
+
+If the [Webdados MCP Connector](https://github.com/webdados/WebdadosMcpConnector) is installed, AI assistants working in FreeScout through it follow the same rules as people do: a mailbox hidden from administrators too is hidden from them, an archived mailbox is read only, and nothing is sent from a mailbox with sending turned off. Notes are still allowed on a mailbox with sending off, as in FreeScout. Without the connector, nothing changes.
+
 ## Important: before you remove this module
 
 Freescout gives modules no way to run anything when they are deactivated or deleted. If you remove this module while a mailbox is archived, that mailbox's email address stays parked on the tagged variant, and the real address survives only in the options table.
