@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5 - 2026-11-23
+
+* Fixed notes not being saved on a mailbox with sending turned off
+
 ## 0.4 - 2026-11-23
 
 * The "Send emails" switch is now on each mailbox's Sending Emails page, next to the settings it turns off
