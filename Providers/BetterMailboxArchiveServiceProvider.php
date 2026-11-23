@@ -1389,10 +1389,32 @@ class BetterMailboxArchiveServiceProvider extends ServiceProvider
                 $this->abortAjax(__('This mailbox is archived and read only.'));
             }
 
-            if (!$this->isSendEnabled($mailbox) && in_array($action, self::BLOCKED_SEND_ACTIONS, true)) {
+            if (!$this->isSendEnabled($mailbox) && in_array($action, self::BLOCKED_SEND_ACTIONS, true)
+                && !$this->isNoteRequest($request, $action)
+            ) {
                 $this->abortAjax(__('Sending is turned off for this mailbox.'));
             }
         }
+    }
+
+    /**
+     * Whether a send_reply request saves a note on an existing conversation.
+     * Core posts notes with the same action as replies, flagged with is_note,
+     * and never emails them, so they stay allowed with sending off (the Note
+     * button is kept, see filterNoteButton()). Read exactly as core reads it,
+     * and a forward is never a note: core checks the forward first and sends it.
+     *
+     * @param \Illuminate\Http\Request $request
+     * @param string                   $action
+     *
+     * @return bool
+     */
+    protected function isNoteRequest($request, $action)
+    {
+        return $action == 'send_reply'
+            && !empty($request->input('is_note'))
+            && !empty($request->input('conversation_id'))
+            && (int) $request->input('subtype') != \App\Thread::SUBTYPE_FORWARD;
     }
 
     /**
