@@ -41,7 +41,7 @@ What it does not do:
 * Upload/extract to the Modules folder on your Freescout install, inside a folder named BetterMailboxArchive
 * Go to Manage > Settings > Tools and Clear Cache
 * Go to Modules and activate "Better Mailbox Archive"
-* The two switches appear in Manage > Mailboxes > [mailbox] > Settings, next to core's own "Archived" switch
+* "Fetch emails" appears in Manage > Mailboxes > [mailbox] > Settings, next to core's own "Archived" switch, and "Send emails" on the mailbox's Sending Emails page
 
 No further configuration is needed.
 
@@ -68,9 +68,5 @@ That puts every released address back, and tells you about any it could not rest
 * **With fetching switched off, the dashboard card loses its "New conversation" button.** Core gates that button on the mailbox being fully connected, and stopping fetching is what makes it report otherwise. There is no hook to put it back, and every other way to start a conversation still works.
 * **The search sidebar's mailbox filter still lists a hidden mailbox by name.** It returns nothing when selected. That list has no extension point and is cached for five minutes.
 * A customer's profile page lists conversations without any extension point for modules, so conversations from an archived mailbox can still show up there for an administrator.
-
-## To do
-
-* Propose upstream the hooks that would let this module do less: a `mailbox.out_active` filter mirroring the existing `mailbox.in_active` would remove nearly all of the send-blocking machinery here. `MailboxesController::connectionOutgoingSave()` is also missing a `mailbox.outgoing_settings_before_save` action, and the `send_test` ajax case is missing a `mailbox.send_test` filter, both of which their incoming counterparts already have.
 
 PRs are welcome.

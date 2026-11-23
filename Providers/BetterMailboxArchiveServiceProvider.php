@@ -509,8 +509,8 @@ class BetterMailboxArchiveServiceProvider extends ServiceProvider
      * Drop hidden mailboxes from a list core has handed us.
      *
      * values() is not optional: layouts/app.blade.php:77 does
-     * "count($mailboxes) == 1" and then "$mailboxes[0]", and both reject() and
-     * core's own Mailbox::excludeArchived() preserve the original keys.
+     * "count($mailboxes) == 1" and then "$mailboxes[0]", and reject() preserves
+     * the original keys.
      *
      * @param mixed $mailboxes
      *
@@ -534,22 +534,7 @@ class BetterMailboxArchiveServiceProvider extends ServiceProvider
             return array_values($mailboxes);
         }
 
-        // Always re-indexed, even when this module removed nothing, because
-        // core hands us a collection that is already broken.
-        //
-        // User::mailboxesCanView() runs Mailbox::excludeArchived() for
-        // non-administrators, which filters with reject() and keeps the
-        // original keys. layouts/app.blade.php:76 then does
-        // "count($mailboxes) == 1" and reads "$mailboxes[0]". A user with
-        // access to exactly two mailboxes, the first of which is archived,
-        // gets a collection of count 1 whose only key is 1, and every
-        // authenticated page dies with "Undefined array key 0".
-        //
-        // Reported upstream as freescout#5647. Our menu.mailboxes and
-        // dashboard.mailboxes callbacks run immediately after the call that
-        // breaks it, so values() here fixes core's bug for any install with
-        // this module active. Remove once that issue is fixed and we no
-        // longer support versions without the fix.
+        // Re-indexed because reject() keeps the original keys, see above.
         return $mailboxes->reject(function ($mailbox) use ($ids) {
             return in_array((int) $mailbox->id, $ids, true);
         })->values();
