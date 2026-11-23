@@ -1,6 +1,6 @@
 # Changelog
 
-## TBA
+## 0.4 - 2026-11-23
 
 * The "Send emails" switch is now on each mailbox's Sending Emails page, next to the settings it turns off
 * A mailbox with sending turned off now shows as not sending: Sending Emails is marked in the menu, Send Test says why it is blocked, and New Conversation is gone
