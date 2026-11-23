@@ -16,16 +16,18 @@ class BetterMailboxArchiveServiceProvider extends ServiceProvider
     protected $defer = false;
 
     /**
-     * Minimum FreeScout core version. 1.8.240 is the release that introduced
-     * archived mailboxes: Mailbox::STATE_ARCHIVED, the "st" meta key and
-     * Mailbox::isArchived(). Everything this module does is layered on top of
-     * that state, and calling isArchived() on an older core is a fatal error,
-     * so the version is enforced at runtime in boot() as well as declared in
-     * module.json (which FreeScout only checks at install/update time).
+     * Minimum FreeScout core version. 1.8.252 is the release with the
+     * sending-side hooks (freescout#5820): mailbox.out_active,
+     * mailbox.send_test, mailbox.connection.after_default_settings and
+     * mailbox.outgoing_settings_before_save. Archived mailboxes themselves
+     * (Mailbox::isArchived()) came in 1.8.240, and calling isArchived() on an
+     * older core is a fatal error. The version is enforced at runtime in boot()
+     * as well as declared in module.json (which FreeScout only checks at
+     * install/update time).
      *
      * @var string
      */
-    const REQUIRED_APP_VERSION = '1.8.240';
+    const REQUIRED_APP_VERSION = '1.8.252';
 
     /**
      * Prefix for every Option key this module writes. Per-mailbox keys are
@@ -182,7 +184,7 @@ class BetterMailboxArchiveServiceProvider extends ServiceProvider
 
         if ($app_version && version_compare($app_version, self::REQUIRED_APP_VERSION, '<')) {
             return sprintf(
-                'requires FreeScout %s or newer, which is the release that added Archived mailboxes (found %s).',
+                'requires FreeScout %s or newer (found %s).',
                 self::REQUIRED_APP_VERSION,
                 $app_version
             );
@@ -229,6 +231,10 @@ class BetterMailboxArchiveServiceProvider extends ServiceProvider
         // Explain on the Fetching Emails page why fetching is off.
         \Eventy::addAction('mailbox.connection_incoming.after_default_settings', array($this, 'renderFetchingNote'), 10, 1);
 
+        // The "Send emails" switch, on the Sending Emails page.
+        \Eventy::addAction('mailbox.connection.after_default_settings', array($this, 'renderSendingSettings'), 10, 1);
+        \Eventy::addAction('mailbox.outgoing_settings_before_save', array($this, 'saveSendingSettings'), 10, 2);
+
         // Fetching. Core already skips archived mailboxes; this covers the
         // switch being used on a mailbox that is not archived.
         \Eventy::addFilter('mailbox.in_active', array($this, 'filterInActive'), 10, 2);
@@ -237,6 +243,8 @@ class BetterMailboxArchiveServiceProvider extends ServiceProvider
         // Sending.
         \Eventy::addFilter('mail.process_swift_message', array($this, 'filterSwiftMessage'), 10, 2);
         \Eventy::addFilter('autoreply.should_send', array($this, 'filterAutoReply'), 10, 2);
+        \Eventy::addFilter('mailbox.out_active', array($this, 'filterOutActive'), 10, 2);
+        \Eventy::addFilter('mailbox.send_test', array($this, 'filterSendTest'), 10, 3);
 
         // Request guard, for everything the hidden buttons would otherwise be
         // the only protection for.
@@ -418,11 +426,12 @@ class BetterMailboxArchiveServiceProvider extends ServiceProvider
      * mailbox is purely our doing.
      *
      * Core shows it whenever isConnected() is false, and isConnected() is
-     * isInActive() && isOutActive(). Our fetch switch forces isInActive()
-     * false, so a mailbox with perfectly good settings starts being flagged
-     * as misconfigured the moment fetching is switched off. True only when
-     * removing our filter would make the warning go away, so a genuinely
-     * unconfigured mailbox still gets warned about.
+     * isInActive() && isOutActive(). Our switches force those false through
+     * mailbox.in_active and mailbox.out_active, so a mailbox with perfectly
+     * good settings would be flagged as misconfigured the moment fetching or
+     * sending is switched off. True only when removing our filters would make
+     * the warning go away, so a genuinely unconfigured mailbox still gets
+     * warned about.
      *
      * @param \App\Mailbox $mailbox
      *
@@ -435,13 +444,40 @@ class BetterMailboxArchiveServiceProvider extends ServiceProvider
             return false;
         }
 
-        if ($this->isFetchEnabled($mailbox) || !$mailbox->isOutActive()) {
+        if ($this->isFetchEnabled($mailbox) && $this->isSendEnabled($mailbox)) {
             return false;
         }
 
-        // Core's own test in isInActive(), minus the filter we registered.
+        return $this->coreInActive($mailbox) && $this->coreOutActive($mailbox);
+    }
+
+    /**
+     * Core's own test in Mailbox::isInActive(), without the filters.
+     *
+     * @param \App\Mailbox $mailbox
+     *
+     * @return bool
+     */
+    protected function coreInActive($mailbox)
+    {
         return (bool) ($mailbox->in_protocol && $mailbox->in_server && $mailbox->in_port
             && $mailbox->in_username && $mailbox->in_password);
+    }
+
+    /**
+     * Core's own test in Mailbox::isOutActive(), without the filters.
+     *
+     * @param \App\Mailbox $mailbox
+     *
+     * @return bool
+     */
+    protected function coreOutActive($mailbox)
+    {
+        if ($mailbox->out_method == Mailbox::OUT_METHOD_PHP_MAIL || $mailbox->out_method == Mailbox::OUT_METHOD_SENDMAIL) {
+            return true;
+        }
+
+        return (bool) $mailbox->out_server;
     }
 
     /**
@@ -614,7 +650,8 @@ class BetterMailboxArchiveServiceProvider extends ServiceProvider
     */
 
     /**
-     * The two switches, on Manage > Mailboxes > [mailbox] > Settings.
+     * The fetch and hide switches, on Manage > Mailboxes > [mailbox] > Settings.
+     * The send switch is on the Sending Emails page (renderSendingSettings()).
      *
      * Admin only, matching core's own Archived switch. The hidden marker is
      * what tells saveSettings() that this form actually contained our fields:
@@ -639,10 +676,9 @@ class BetterMailboxArchiveServiceProvider extends ServiceProvider
         }
 
         $fetch_on = $this->option('fetch_enabled', $mailbox->id) == '1';
-        $send_on = $this->option('send_enabled', $mailbox->id) == '1';
         $original_email = $this->option('original_email', $mailbox->id, '');
 
-        // Archiving already forces both switches off, so they are irrelevant
+        // Archiving already forces fetching off, so the switch is irrelevant
         // while it is on. Rendered hidden server-side rather than left to the
         // script below, so the state is right even before any JavaScript runs.
         $hide_switches = $mailbox->isArchived() ? ' style="display: none;"' : '';
@@ -679,20 +715,6 @@ class BetterMailboxArchiveServiceProvider extends ServiceProvider
                                 <label class="onoffswitch-label" for="bettermailboxarchive_fetch_enabled"></label>
                             </div>
                             <i class="glyphicon glyphicon-info-sign icon-info icon-info-inline" data-toggle="popover" data-trigger="hover" data-placement="top" data-content="<?php echo __('Turn off to stop checking this mailbox for new email, while leaving it fully visible and searchable for everyone.'); ?>"></i>
-                        </div>
-                    </div>
-                </div>
-            </div>
-            <div class="form-group better-mailbox-archive-switch"<?php echo $hide_switches; ?>>
-                <label for="bettermailboxarchive_send_enabled" class="col-sm-2 control-label"><?php echo __('Send emails'); ?></label>
-                <div class="col-sm-6">
-                    <div class="controls">
-                        <div class="onoffswitch-wrap">
-                            <div class="onoffswitch">
-                                <input type="checkbox" name="bettermailboxarchive_send_enabled" value="1" id="bettermailboxarchive_send_enabled" class="onoffswitch-checkbox" <?php if ($send_on) echo 'checked="checked"'; ?>>
-                                <label class="onoffswitch-label" for="bettermailboxarchive_send_enabled"></label>
-                            </div>
-                            <i class="glyphicon glyphicon-info-sign icon-info icon-info-inline" data-toggle="popover" data-trigger="hover" data-placement="top" data-content="<?php echo __('Turn off to stop this mailbox sending anything at all: replies, forwards, auto replies and staff notifications. Reply and Forward are removed from its conversations.'); ?>"></i>
                         </div>
                     </div>
                 </div>
@@ -793,6 +815,97 @@ class BetterMailboxArchiveServiceProvider extends ServiceProvider
         <?php
     }
 
+    /**
+     * The "Send emails" switch, on Connection Settings > Sending Emails, next to
+     * the settings it switches off. While the mailbox is archived a note takes
+     * its place, since archiving always stops sending.
+     *
+     * Admin only, like the switches on the Mailbox Settings page. The hidden
+     * marker tells saveSendingSettings() the form carried the switch.
+     *
+     * @param \App\Mailbox $mailbox
+     *
+     * @return void
+     */
+    public function renderSendingSettings($mailbox)
+    {
+        if (!$mailbox || !$mailbox->exists) {
+            return;
+        }
+
+        $user = auth()->user();
+        if (!$user || !$user->isAdmin()) {
+            return;
+        }
+
+        if ($mailbox->isArchived()) {
+            ?>
+            <div class="form-group">
+                <div class="col-sm-6 col-sm-offset-2">
+                    <div class="alert alert-info">
+                        <?php echo __('This mailbox is archived, so it does not send email.'); ?>
+                        <a href="<?php echo route('mailboxes.update', array('id' => $mailbox->id)); ?>"><?php echo __('Mailbox Settings'); ?></a>
+                    </div>
+                </div>
+            </div>
+            <hr>
+            <?php
+            return;
+        }
+
+        // After a failed validation core redirects back with the old input:
+        // show what was posted rather than what is stored.
+        if (old('bettermailboxarchive_send_present')) {
+            $send_on = (bool) old('bettermailboxarchive_send_enabled');
+        } else {
+            $send_on = $this->option('send_enabled', $mailbox->id) == '1';
+        }
+        ?>
+        <div class="form-group">
+            <label for="bettermailboxarchive_send_enabled" class="col-sm-2 control-label"><?php echo __('Send emails'); ?></label>
+            <div class="col-sm-6">
+                <div class="controls">
+                    <div class="onoffswitch-wrap">
+                        <div class="onoffswitch">
+                            <input type="checkbox" name="bettermailboxarchive_send_enabled" value="1" id="bettermailboxarchive_send_enabled" class="onoffswitch-checkbox" <?php if ($send_on) echo 'checked="checked"'; ?>>
+                            <label class="onoffswitch-label" for="bettermailboxarchive_send_enabled"></label>
+                        </div>
+                        <i class="glyphicon glyphicon-info-sign icon-info icon-info-inline" data-toggle="popover" data-trigger="hover" data-placement="top" data-content="<?php echo __('Turn off to stop this mailbox sending anything at all: replies, forwards, auto replies and staff notifications. Reply and Forward are removed from its conversations.'); ?>"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <input type="hidden" name="bettermailboxarchive_send_present" value="1">
+        <hr>
+        <?php
+    }
+
+    /**
+     * Save the "Send emails" switch with the rest of the Sending Emails page.
+     *
+     * Fires after core's own validation passed and before it saves the
+     * connection settings. Nothing is stored for an archived mailbox, so the
+     * switch comes back as it was when the mailbox is un-archived.
+     *
+     * @param \App\Mailbox             $mailbox
+     * @param \Illuminate\Http\Request $request
+     *
+     * @return void
+     */
+    public function saveSendingSettings($mailbox, $request)
+    {
+        if (!$mailbox || !$mailbox->exists || !$request->filled('bettermailboxarchive_send_present')) {
+            return;
+        }
+
+        $user = auth()->user();
+        if (!$user || !$user->isAdmin() || $mailbox->isArchived()) {
+            return;
+        }
+
+        $this->setOption('send_enabled', $mailbox->id, $request->filled('bettermailboxarchive_send_enabled') ? '1' : '0');
+    }
+
     /*
     |--------------------------------------------------------------------------
     | Saving, and the email address release
@@ -858,7 +971,8 @@ class BetterMailboxArchiveServiceProvider extends ServiceProvider
     }
 
     /**
-     * Persist the two switches and perform the address release or restore.
+     * Persist the fetch and hide switches and perform the address release or
+     * restore.
      *
      * Fires before core sets $mailbox->state (a few lines further down in
      * MailboxesController::updateSave()), so the target state is read from the
@@ -884,7 +998,6 @@ class BetterMailboxArchiveServiceProvider extends ServiceProvider
         // back as they were when the mailbox is un-archived.
         if (!$will_be_archived) {
             $this->setOption('fetch_enabled', $mailbox->id, $request->filled('bettermailboxarchive_fetch_enabled') ? '1' : '0');
-            $this->setOption('send_enabled', $mailbox->id, $request->filled('bettermailboxarchive_send_enabled') ? '1' : '0');
         } else {
             // Only shown, and so only posted, while archived.
             $this->setOption('hidden_from_admins', $mailbox->id, $request->filled('bettermailboxarchive_hidden_from_admins') ? '1' : '0');
@@ -1159,6 +1272,51 @@ class BetterMailboxArchiveServiceProvider extends ServiceProvider
         return $this->isSendEnabled($this->findMailbox($conversation->mailbox_id), false);
     }
 
+    /**
+     * Report a mailbox that must not send as not sending, so core shows it that
+     * way: the warning next to Sending Emails, the disabled Send Test field,
+     * and no New Conversation button.
+     *
+     * Only what is shown depends on this. filterSwiftMessage() is what actually
+     * stops the messages.
+     *
+     * @param bool|null    $out_active
+     * @param \App\Mailbox $mailbox
+     *
+     * @return bool|null
+     */
+    public function filterOutActive($out_active, $mailbox)
+    {
+        if ($out_active === false || !$mailbox) {
+            return $out_active;
+        }
+
+        return $this->isSendEnabled($mailbox) ? $out_active : false;
+    }
+
+    /**
+     * Say why Send Test is refused, instead of sending a test message that
+     * filterSwiftMessage() would drop.
+     *
+     * @param array        $response
+     * @param \App\Mailbox $mailbox
+     * @param string|null  $to
+     *
+     * @return array
+     */
+    public function filterSendTest($response, $mailbox, $to = null)
+    {
+        if (!$mailbox || !empty($response['msg']) || $this->isSendEnabled($mailbox)) {
+            return $response;
+        }
+
+        $response['msg'] = $mailbox->isArchived()
+            ? __('This mailbox is archived, so it does not send email.')
+            : __('Sending is turned off for this mailbox.');
+
+        return $response;
+    }
+
     /*
     |--------------------------------------------------------------------------
     | Request guard
@@ -1188,8 +1346,8 @@ class BetterMailboxArchiveServiceProvider extends ServiceProvider
         // Anti-lockout, evaluated before anything that can deny: the screens
         // that let an administrator turn "Hide from administrators too" back
         // off are never refused. mailboxes.ajax stays reachable here because
-        // the settings screens need it; the narrower send_test check below
-        // still applies to it.
+        // the settings screens need it; Send Test is refused by
+        // filterSendTest().
         $always_allowed = in_array($route_name, self::ALWAYS_ALLOWED_ROUTES, true);
 
         if (!$always_allowed) {
@@ -1202,16 +1360,6 @@ class BetterMailboxArchiveServiceProvider extends ServiceProvider
 
                 abort(404);
             }
-        }
-
-        if ($route_name == 'mailboxes.ajax' && $request->input('action') == 'send_test') {
-            $mailbox = $this->findMailbox($request->input('mailbox_id'));
-
-            if ($mailbox && !$this->isSendEnabled($mailbox)) {
-                $this->abortAjax(__('Sending is turned off for this mailbox.'));
-            }
-
-            return;
         }
 
         if ($route_name == 'conversations.create' || $route_name == 'conversations.clone_conversation') {
@@ -1678,8 +1826,8 @@ class BetterMailboxArchiveServiceProvider extends ServiceProvider
         }
 
         // Core's lightning bolt means "connection not configured", has no
-        // tooltip and says nothing to anyone. Where our own fetch switch is
-        // the only reason it appears, it is simply wrong, so drop it.
+        // tooltip and says nothing to anyone. Where our own switches are the
+        // only reason it appears, it is simply wrong, so drop it.
         if ($this->connectionWarningIsOurs($current)) {
             $rules[] = '.sidebar-title .glyphicon-flash { display: none !important; }';
         }
@@ -1693,8 +1841,8 @@ class BetterMailboxArchiveServiceProvider extends ServiceProvider
         // the same isConnected() test, and the dashboard goes further: it
         // replaces the folder counts with "Administrator has not configured
         // mailbox connection settings yet." Both are wrong for a mailbox whose
-        // only problem is that we switched fetching off, and both are keyed on
-        // the mailbox id, so they can be undone per card.
+        // only problem is that we switched fetching or sending off, and both
+        // are keyed on the mailbox id, so they can be undone per card.
         foreach ($this->falselyUnconfiguredMailboxIds() as $id) {
             $rules[] = '.dash-card[data-mailbox-id="'.$id.'"].dash-card-inactive { background: #fff !important; }';
             $rules[] = '.dash-card[data-mailbox-id="'.$id.'"].dash-card-inactive .dash-card-list { display: block !important; }';
@@ -1769,8 +1917,9 @@ class BetterMailboxArchiveServiceProvider extends ServiceProvider
     }
 
     /**
-     * Replace core's "Receiving emails need to be configured" warning with
-     * something true when our switch is the reason for it.
+     * Replace core's "Receiving emails need to be configured" and "Sending
+     * emails need to be configured" warnings with something true when our
+     * switches are the reason for them.
      *
      * @param array $flashes
      *
@@ -1784,26 +1933,43 @@ class BetterMailboxArchiveServiceProvider extends ServiceProvider
 
         $mailbox = $this->findMailbox(request()->route('id'));
 
-        if (!$mailbox || $this->isFetchEnabled($mailbox)) {
+        if (!$mailbox) {
             return $flashes;
         }
 
-        // Core warns that receiving "needs to be configured" whenever the
-        // mailbox reports as not fetching, which is misleading when that is
-        // exactly what was asked for.
-        $replacement = $mailbox->isArchived()
-            ? __('This mailbox is archived, so it does not check for new email.')
-            : __('Fetching is turned off for this mailbox.');
+        $replacements = array();
 
-        $needle = route('mailboxes.connection.incoming', array('id' => $mailbox->id));
+        // Core warns that receiving or sending "needs to be configured"
+        // whenever the mailbox reports as not fetching or not sending, which
+        // is misleading when that is exactly what was asked for. The links
+        // core puts in each warning tell them apart.
+        if (!$this->isFetchEnabled($mailbox)) {
+            $replacements['"'.route('mailboxes.connection.incoming', array('id' => $mailbox->id)).'"'] = $mailbox->isArchived()
+                ? __('This mailbox is archived, so it does not check for new email.')
+                : __('Fetching is turned off for this mailbox.');
+        }
+
+        if (!$this->isSendEnabled($mailbox)) {
+            $replacements['"'.route('mailboxes.connection', array('id' => $mailbox->id)).'"'] = $mailbox->isArchived()
+                ? __('This mailbox is archived, so it does not send email.')
+                : __('Sending is turned off for this mailbox.');
+        }
 
         foreach ($flashes as $i => $flash) {
-            if (!empty($flash['text']) && strpos($flash['text'], $needle) !== false) {
-                $flashes[$i] = array(
-                    'type'      => 'info',
-                    'text'      => $replacement,
-                    'unescaped' => true,
-                );
+            if (empty($flash['text'])) {
+                continue;
+            }
+
+            foreach ($replacements as $needle => $replacement) {
+                if (strpos($flash['text'], $needle) !== false) {
+                    $flashes[$i] = array(
+                        'type'      => 'info',
+                        'text'      => $replacement,
+                        'unescaped' => true,
+                    );
+
+                    break;
+                }
             }
         }
 

@@ -1,5 +1,11 @@
 # Changelog
 
+## TBA
+
+* The "Send emails" switch is now on each mailbox's Sending Emails page, next to the settings it turns off
+* A mailbox with sending turned off now shows as not sending: Sending Emails is marked in the menu, Send Test says why it is blocked, and New Conversation is gone
+* Requires FreeScout 1.8.252 or newer
+
 ## 0.3 - 2026-11-17
 
 * Works with the Webdados MCP Connector: AI assistants connected to FreeScout through it follow this module's rules. Mailboxes hidden from administrators stay hidden from them, archived mailboxes stay read only, nothing is sent from a mailbox with sending turned off, and the assistant is told whether each mailbox sends
